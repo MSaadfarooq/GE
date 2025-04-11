@@ -1,0 +1,244 @@
+---
+title: "FA"
+format: html
+editor: visual
+---
+
+## DE and Functional analysis
+
+DEGs from treated and untreated sample groups are functionally annotated and GSEA is performed.
+
+```{r}
+#| include: false
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(gprofiler2)
+library(pathview)
+library(simplifyEnrichment)
+library(tidyverse)
+library(europepmc)
+library(kableExtra)
+library(RColorBrewer)
+```
+
+```{r}
+#| echo: false
+#| include: false
+sigDEGs <- read_csv("C:/Users/saad.malik/OneDrive - Aga Khan University/Documents/treat/EDA_DE/sigDEGs.csv")
+meta <- read_csv("C:/Users/saad.malik/OneDrive - Aga Khan University/Documents/treat/meta.csv")
+```
+
+### DE insights
+
+![](images/volcano-02.png)
+
+```{r DEGs}
+# the number of significant DEGs
+length(sigDEGs$gene_name)
+kable(head(sigDEGs))
+```
+
+### GO Enrichment analysis
+
+The over-representation analysis (ORA) is directly applied to the list of DE genes and it evaluates the association of the DE genes and the gene set by the numbers of genes in different categories
+
+```{r GO}
+# performs ORA on GO gene sets
+resGO <- enrichGO(gene = sigDEGs$gene_name,
+                  keyType = "SYMBOL",
+                  ont = "BP",
+                  OrgDb = org.Hs.eg.db)
+resGOTable <- as.data.frame(resGO)
+write.csv(resGOTable, "GO_ORA.csv")
+kable(head(resGOTable))
+```
+
+-   `GeneRatio`: Number of DE genes in the gene set / total number of DE genes.
+
+-   `BgRatio`: Size of the gene set / total number of genes.
+
+We may need to use the complete enrichment table for downstream anlaysis later so qvaluecutoff =1 can be set.
+
+**NOTE:** You can also perform GO enrichment analysis with only the up or down regulated genes to identify GO terms impacted in one direction
+
+`sigOE_up <- sigDEGs %>% filter(log2FoldChange > 0)`
+
+### Visualisation
+
+#### *barplot*
+
+for a small number of significant gene sets.
+
+```{r}
+barplot(resGO, showCategory = 10)
+```
+
+#### *dotplot*
+
+The terms are ordered by the values on x-axis (the `GeneRatio`).
+
+```{r}
+# sizes of dots can be mapped to a third variable
+dotplot(resGO, showCategory = 15) +
+  viridis::scale_fill_viridis()
+```
+
+```{r}
+## customized dotplot with RichFactor
+ggplot(resGOTable[1:10,]) +
+  geom_point(aes(x = RichFactor, y = Description,
+                 colour = pvalue, size = Count)) +
+  xlab("Rich Factor") + ylab("Top 10 significant GO terms") +
+  ggtitle("Dotplot of GO terms", ) +
+  scale_color_gradientn(name = "Significance \n (-log10(padj))",
+                        colors = brewer.pal(3, "YlOrRd")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(size=rel(1.15)),
+        axis.title = element_text(size=rel(1.15)),
+        plot.title=element_text(hjust=0.5, face = "bold"),
+        legend.title = element_text(size=rel(1.15),hjust=0.5,face="bold"))
+```
+
+Rich factor: the ratio of the number of enriched DEGs in the KEGG category to the total genes in that category. The larger the Rich factor, the higher the degree of enrichment. [Paper Ref](https://rbej.biomedcentral.com/articles/10.1186/s12958-019-0546-z).
+
+<!--# see vis_DEG for bioconductor way of plot. -->
+
+### Enrichment map
+
+It connects GO terms with edges between overlapping gene sets. This makes it easier to identify functional modules.
+
+```{r}
+# Add similarity matrix to the termsim slot of enrichment result
+resGO_bp <- pairwise_termsim(resGO, method = "JC")
+
+# Enrichmap clusters the 10 most significant (by padj) GO terms to visualize relationships between terms
+emapplot(resGO_bp, color = "qvalue", layout="kk",
+         showCategory = 15)
+```
+
+### **Category netplot**
+
+shows the relationships between the genes associated with the top five most significant GO terms and the fold changes of the significant genes associated with these terms (color). 
+
+```{r}
+## To color genes by log2 fold changes, extract the LFC from results table
+OE_foldchanges <- sigDEGs$log2FoldChange
+
+names(OE_foldchanges) <- sigDEGs$gene
+
+## Cnetplot details the genes associated with one or more terms - by default gives the top 5 significant terms (by padj)
+cnetplot(resGO, 
+         showCategory = 5, 
+         color.params=list(foldChange=OE_foldchanges),
+         vertex.label.font=6)
+         
+## If some of the high fold changes are getting drowned out due to a large range, you could set a maximum fold change value
+# OE_foldchanges <- ifelse(OE_foldchanges > 2, 2, OE_foldchanges)
+# OE_foldchanges <- ifelse(OE_foldchanges < -2, -2, OE_foldchanges)
+# 
+# cnetplot(ego, 
+#          showCategory = 5, 
+#          color.params=list(foldChange=OE_foldchanges),
+#          vertex.label.font=6)
+
+# * can be result of interest *
+```
+
+### Interactive enrichment plot
+
+The gProfiler package can be used to interactively plot the enrichment results
+
+```{r}
+gostres <- gost(sigDEGs$gene)
+gostplot(gostres, capped = FALSE)
+```
+
+## **KEGG pathway**
+
+```{r}
+ek <- enrichKEGG(gene = sigDEGs$entrezid,
+                 organism = 'hsa', 
+                 pvalueCutoff = 0.05)
+ekTable <- as.data.frame(ek)
+kable(head(ekTable))
+```
+
+```{r}
+#browseKEGG(ek, 'hsa05323')
+```
+
+We can summarize the common functions from the long list of GO terms.
+
+```{r}
+GO_ID <- resGOTable$ID[resGOTable$p.adjust < 0.1]
+# partitions GO terms into clusters based on similarity
+simplifyGO(GO_ID)
+```
+
+## **Pubmed trend of enriched terms**
+
+The publications trend based on the query result from PubMed Central for past 6 years. 
+
+```{r}
+terms <- resGO_bp$Description[1:5]
+p <- pmcplot(terms, 2018:2024, proportion=FALSE)
+plot(p)
+```
+
+## Functional class scoring
+
+**Weaker but coordinated changes in sets of functionally related genes (i.e., pathways) can also have significant effect**s. Thus, rather than setting an arbitrary threshold to identify ‘significant genes’, **all genes are considered** in the analysis.
+
+One commonly used tool which is classified under Functional class scoring (FCS), is [**GSEA**](https://www.pnas.org/content/102/43/15545). It utilizes the gene-level statistics or LFC for all genes to look to see whether gene sets for particular biological pathways are enriched among the large positive or negative fold changes.
+
+```{r}
+## Remove any NA values (reduces the data by quite a bit)
+res_entrez <- sigDEGs %>% filter(entrezid != "NA")
+
+## Remove any Entrez duplicates
+res_entrez <- res_entrez[which(duplicated(res_entrez$entrezid) == F), ]
+
+## Extract the foldchanges for every gene
+foldchanges <- res_entrez$log2FoldChange
+
+## Name each fold change with the corresponding Entrez ID
+names(foldchanges) <- res_entrez$entrezid
+
+## Sort fold changes in decreasing order
+foldchanges <- sort(foldchanges, decreasing = TRUE)
+```
+
+```{r}
+## GSEA using gene sets from KEGG pathways
+gseaKEGG <- gseKEGG(geneList = foldchanges,
+              organism = "hsa", 
+              minGSSize = 20, # minimum gene set size - change to test more sets or recover sets with fewer # genes
+              pvalueCutoff = 0.05, # padj cutoff
+              verbose = FALSE)
+
+# convert Entrez identifiers into gene symbols - DOSE
+gseaKEGG_Symbol <- setReadable(gseaKEGG, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
+
+## Extract the GSEA results
+gseaKEGG_results <- gseaKEGG_Symbol@result
+
+# Write results to file
+write.csv(gseaKEGG_Symbol, "gsea_OE_kegg.csv", quote=F)
+
+kable(gseaKEGG_Symbol)
+```
+
+**core_enrichment:** These are the genes associated with the pathway which contributed to the observed enrichment score (i.e. in the extremes of the ranking).
+
+```{r}
+## explore the GSEA plot of enrichment of one of the pathways in the ranked list
+gseaplot(gseaKEGG, geneSetID = 'hsa04151')
+
+# a
+gseaplot2(gseaKEGG, geneSetID = 2, title= gseaKEGG_results$Description[2])
+```
+
+The top plot shows the magnitude of the log2 fold changes for each gene, while the bottom plot shows the running sum, with the enrichment score peaking at the red dotted line (which is among the negative log2 fold changes). This suggests the down-regulation of this pathway.
+
+[Publication figures](https://hbctraining.github.io/publication_perfect/)

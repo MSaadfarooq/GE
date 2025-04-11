@@ -1,4 +1,5 @@
 # GE
+
 RNA-seq analysis of Welcome project
 
 Workflow and scripts are present in this repository
@@ -8,17 +9,24 @@ Workflow and scripts are present in this repository
 FASTQC
 STAR
 qualimap
+samtools
 
-salmon
+these are all for QC
+
+salmon - transcript quantification
 
 - followed by R based workflow for DGE
 
-tximeta
-DESeq2
+tximeta - importing
+
+DESeq2 - DE
+
 AnnotationHub
+
 clusterProfiler
 
-- for I clusters and network analysis
+- for clusters and network analysis 
+
 WGCNA
 pyWGCNA
 GWENA

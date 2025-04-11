@@ -1,0 +1,133 @@
+---
+title: "bioinfo"
+format: pptx
+editor: visual
+---
+
+## Bullets
+
+```{r}
+library(tidySummarizedExperiment)
+#library(ggplot2)
+```
+
+## Code
+
+When you click the **Render** button a presentation will be generated that includes both content and the output of embedded code. You can embed code like this:
+
+```{r}
+CB_gse %>% slice(2)
+```
+
+------------------------------------------------------------------------
+
+-   it could be blank
+-   but i added code
+
+```{r}
+CB_gse %>% select(.sample)
+```
+
+```{r}
+CB_gse %>% distinct(.sample, bw, sex)
+```
+
+```{r}
+CB_gse %>% distinct(gene_biotype)
+```
+
+```{r}
+CB_gse %>% rename(seq=libSize)
+```
+
+We could use `unite` to combine multiple columns into a single column.
+
+```{r}
+CB_gse %>% unite('SampType', c(bw, sex), sep = "_")
+```
+
+```{r}
+CB_gse %>% group_by(bw) %>%
+    summarise(total_counts=sum(counts))
+
+CB_gse %>% group_by(bw) %>%
+    summarise(mean_count=mean(counts))
+```
+
+Combine `group_by`, `mutate` and `filter` to get the transcripts with mean count \> 0.
+
+```{r}
+CB_gse %>%
+    group_by(.feature) %>%
+    mutate(mean_count=mean(counts)) %>%
+    filter(mean_count > 0)
+```
+
+### Plotting
+
+```{r}
+# set theme
+my_theme <-
+    list(
+        scale_fill_brewer(palette="Set1"),
+        scale_color_brewer(palette="Set1"),
+        theme_bw() +
+            theme(
+                panel.border=element_blank(),
+                axis.line=element_line(),
+                panel.grid.major=element_line(linewidth=0.2),
+                panel.grid.minor=element_line(linewidth=0.1),
+                text=element_text(size=12),
+                legend.position="bottom",
+                aspect.ratio=1,
+                strip.background=element_blank(),
+                axis.title.x=element_text(margin=margin(t=10, r=10, b=10, l=10)),
+                axis.title.y=element_text(margin=margin(t=10, r=10, b=10, l=10))
+            )
+    )
+```
+
+We can treat `gse_tidy` as a normal tibble for plotting
+
+```{r}
+# distribution of counts per sample
+CB_gse %>%
+    ggplot(aes(counts + 1, group=.sample, color=bw)) +
+    geom_density() +
+    scale_x_log10() +
+    my_theme
+```
+
+```{r}
+CB_gse |> 
+  filter(.feature %in% c("CB0002","CB0017")) |> # `.feature` a special name
+  ggplot(aes(bw, counts, color=sex, group=sex)) + 
+  geom_point(size=2) + geom_line() #+ facet_wrap(~.feature)
+```
+
+```{r}
+library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+library(org.Hs.eg.db)
+library(plyranges)
+```
+
+```{r}
+# Add the ENSEMBL ID and pull out the two tissue-specific sets
+g <- genes(TxDb.Hsapiens.UCSC.hg19.knownGene)
+```
+
+```{r}
+g <- g %>% mutate(ensembl = mapIds(org.Hs.eg.db, gene_id, "ENSEMBL", "ENTREZID"))
+bladder_g <- g %>% filter(ensembl %in% bladder_expr)
+kidney_g <- g %>% filter(ensembl %in% kidney_expr)
+```
+
+Combine the two sets with `bind_ranges`, and change the feature size from the whole gene extent (the range from the leftmost exon to rightmost exon), to just the TSS, using `anchor_5p` and `mutate`
+
+```{r}
+tss <- bind_ranges(bladder=bladder_g,
+                   kidney=kidney_g,
+                   .id="gtissue") %>%
+  anchor_5p() %>%
+  mutate(width=1)
+```

@@ -1,0 +1,422 @@
+# Load libraries ----
+suppressPackageStartupMessages({
+  library(DESeq2)
+  library(vsn)
+  library(tidyverse)
+  library(tximeta)
+  library(apeglm)
+  library(ComplexHeatmap)
+  library(RColorBrewer)
+  library(factoextra)
+  library(rafalib)
+  library(dendextend)
+  library(ggdendro)
+  library(corrplot)
+  library(PCAtools)
+})
+library(ExploreModelMatrix)
+library(hexbin)
+library(iSEE)
+library(clustertend)
+library(NbClust)
+library(ClassDiscovery)
+
+# import the sample sheet ----
+meta<-read_csv('Metadata.csv') # missing IDs ?
+#Meta$sampleID <- paste0(meta$cordBlood_ID,'_', meta$bw)
+
+# Set directory path
+dir <- "~/results/salmon"
+# List directories and extract sample names
+dirs <- list.files(dir, full.names = FALSE, pattern = "\\.salmon$")
+sample_names <- sub("\\.salmon$", "", dirs)
+
+## tximeta expects a table with at least 2 columns (names and files)
+# Modify the file path construction to include the .salmon suffix
+coldata <- meta %>%
+  select(names = cordBlood_ID, bw, sex, delivery) %>%
+  mutate(files = file.path("~/results/salmon",
+                           paste0(meta$cordBlood_ID, ".salmon"),"quant.sf"))
+
+# check the modified file paths & if it exists
+coldata$files
+file.exists(coldata$files)
+
+coldata <- coldata[file.exists(coldata$files),]
+stopifnot(all(file.exists(coldata$files)))
+# Read in Salmon counts with tximeta to create SE object
+se <- tximeta(coldata)
+se
+# summarise per-transcript counts into per-gene counts
+gse <- summarizeToGene(se, assignRanges="abundant")
+gse
+
+# number of genes with counts above cutoff 
+length(which(rowSums(assay(gse, "counts")) > 10))
+
+# filter for low counts
+gse <- gse[rowSums(assay(gse, "counts")) > 10, ]
+gse # colData(), rowRanges(), assay()
+
+# assess types of RNA
+table(rowData(gse)$gene_biotype)
+
+# subsetting to only the mRNA genes
+mRNA_genes <- gse[rowData(gse)$gene_biotype == "protein_coding", ]
+mRNA_genes@rowRanges@ranges@NAMES |> head()
+
+# compare the library sizes of samples
+gse$libSize <-  colSums(assay(gse))
+colData(gse) |>
+  as.data.frame() |>
+  ggplot(aes(x = names, y = libSize / 1e6, fill = bw)) + 
+  geom_bar(stat = "identity") + theme_bw() + 
+  labs(x = "Sample", y = "Total count in millions") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+
+# Write the counts to an object
+gene_counts <- assay(gse) %>% 
+  round() %>% 
+  data.frame()
+saveRDS(gse, 'Outputs/gse_CB.RDS')  # gse <- readRDS("gse.RDS")
+write.csv(gene_counts, 'Outputs/gene_counts.csv', row.names = TRUE)
+
+# RNA-seq counts distribution
+ggplot(gene_counts) +
+  geom_histogram(aes(x = CB0003), stat = "bin", bins = 200) +
+  xlab("Raw expression counts") +
+  ylab("Number of genes")
+
+# Raw counts range
+summary(gene_counts)
+
+# few outliers affect distribution visualization
+boxplot(gene_counts, main='Raw counts', las=2)
+
+# Rows with few counts, if can be ignored
+rs <- rowSums(assay(gse))
+hist(log10(rs + 1))
+abline(v=1, col="blue", lwd=3)
+
+cts <- gene_counts[rs > 100,]
+
+# two samples’ GE values against each other in a scatterplot
+smoothScatter(cts[,1:2]) # better job with so many data points
+
+# take the log of counts & plot again
+logcts <- log10(cts + 1)
+smoothScatter(logcts[,1:2])
+
+# get a sense for the distribution of counts (log-scale)
+hist(logcts[,1])
+
+avg_expr <- rowMeans(gene_counts)
+
+layout(matrix(1:2, nrow=1))
+hist(avg_expr)
+hist(log10(avg_expr + 1))
+
+# also log-transform the y-axis
+ggplot(data.frame(avg_expr), aes(x=avg_expr)) +
+  geom_histogram(bins = 50) +
+  scale_x_continuous(breaks = c(0,1,10,100,1000,10000,20000), trans="log1p", expand=c(0,0)) +
+  scale_y_continuous(breaks = c(0,1), expand=c(0,0), trans="log1p") +
+  theme_bw()
+
+# log2 of counts for transformation
+logcounts <- log2(gene_counts + 1)
+
+# make a colour vector
+statusCols <- case_when(gse$bw=="low" ~ "red3", 
+                        gse$bw=="normal" ~ "orange")
+# Check distributions of samples using boxplots
+boxplot(logcounts,
+        xlab="",
+        ylab="Log2(Counts)",
+        las=2,
+        col=statusCols,
+        main="Log2(Counts)")
+legend("topright", legend = c("Low", "Normal"),fill = c("red3", "orange"), cex=0.7)
+
+logcounts <- log(gene_counts[,3],10) 
+boxplot(logcounts, main="", xlab="", ylab="Raw read counts per gene (log10)",axes=FALSE)
+d <- density(logcounts)
+plot(d,xlim=c(1,8),main="",ylim=c(0,.45),xlab="Raw read counts per gene (log10)", ylab="Density")
+
+# Subset the read counts for the 100 highly expressed genes ----
+top.exp <- order(rowMeans(gene_counts), decreasing=TRUE)[1:100]
+top.exp <- gene_counts[top.exp,]
+
+# Annotate the samples in the subset with their age (check order with design!)
+colnames(top.exp)<- meta$gestational_age
+head(top.exp)
+pheatmap(top.exp, cluster_cols = F, labels_row = F)
+
+# Clustering genes most variable across samples ----
+VarGenes <- apply(gene_counts, 1, var) # compute variance of each gene
+
+#sort the results by variance in decreasing order and select the top 100 genes
+topVarGenes <- names(VarGenes[order(VarGenes, decreasing = T)][1:100])
+
+pheatmap(gene_counts[topVarGenes,], scale = 'row', show_rownames = FALSE)
+
+# overlay some annotation tracks to observer replicate clustering
+heatmapColAnnot <- data.frame(colData(gse)[, c("bw", "sex")])
+pheatmap(gene_counts[topVarGenes,], scale = 'row',
+         show_rownames = FALSE,
+         annotation_col = heatmapColAnnot)
+
+## Create the DESeq dataset object
+dds <- DESeqDataSet(gse, design = ~ bw)
+dds
+# variance increases with the average read count
+meanSdPlot(assay(dds), ranks = FALSE)
+
+# visualize the design ----
+vd <- VisualizeDesign(sampleData = colData(dds), 
+                      designFormula = ~ bw + sex
+)
+vd
+vd$plotlist
+# visualize this design
+vd <- VisualizeDesign(sampleData = coldata[, c("sex", "bw")], 
+                      designMatrix = attr(dds, "modelMatrix"), 
+                      flipCoordFitted = TRUE)
+
+# Transform counts for data visualization
+vsd <- vst(dds, blind=TRUE)
+saveRDS(vsd, file =paste0("vsd.RDS"))
+meanSdPlot(assay(vsd), ranks = FALSE)
+
+# Plot PCA ----
+plotPCA(vsd, intgroup="bw") # ntop= can be used 
+
+# alternate to show variances
+pcaData <- plotPCA(vsd, intgroup="bw", returnData=T)
+
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(x = PC1, y = PC2)) +
+  geom_point(aes(color = bw), size = 3) +
+  theme_bw() +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed() 
+
+pcaData_vsd_grp <- plotPCA(vsd, intgroup = c("libSize"), returnData = TRUE)
+percentVar <- round(100 * attr(pcaData_vsd_grp, "percentVar"))
+
+ggplot(pcaData_vsd_grp, aes(x = PC1, y = PC2)) +
+  geom_point(aes(color = libSize / 1e6), size = 3) +
+  theme_bw() +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed()
+
+# Explore the additional PCs or if identify genes that contribute most to the PCs
+vsd_mat <- assay(vsd) # Input is a matrix of log transformed values
+pcData_add <- prcomp(t(vsd_mat))
+
+# Create data frame with metadata and additional PC values for input to ggplot
+df <- cbind(meta, pcData_add$x)
+ggplot(df) +
+  geom_point(aes(x=PC1, y=PC5, color = group)) + theme_bw()
+
+# PCA plot with sample lables 
+autoplot(pcData_add, data = meta, colour = 'bw', shape='sex', size=3) +
+  geom_text_repel(aes(x = PC1, y = PC2, label = cordBlood_ID), box.padding = 0.8)
+
+# count density for all samples, by group
+vsd_mat %>% 
+  as.data.frame() %>% 
+  pivot_longer(names_to = "sample", values_to = "logCounts", everything()) %>% 
+  left_join(meta) %>% 
+  ggplot(aes(x=logCounts, group = sample)) +
+  geom_density(aes(colour = bw)) +
+  #scale_colour_manual(values = statusCols) +
+  labs(x = "log of Counts", title = "Gene exp count density")
+
+# batches in the PCA plot after vst ----
+mm <- model.matrix(~bw, colData(vsd))
+mat <- limma::removeBatchEffect(vsd_mat, batch=vsd$batch, design=mm)
+assay(vsd) <- mat
+plotPCA(vsd, intgroup='bw')
+
+# PCAtools
+p <- pca(vsd_mat, metadata = colData(dds), removeVar = 0.1)
+screeplot(p, axisLabSize = 12, titleLabSize = 12)
+biplot(p, showLoadings = TRUE,
+       labSize = 5, pointSize = 5, sizeLoadingsNames = 5)
+pairsplot(p)
+biplot(p, colby = 'bw')
+
+# CLUSTERING OF NORMALISED, FILTERED DATA ----
+meta$cl <- as.factor(meta$bw)
+meta$cl <- factor(meta$cl, levels=c("normal", "low"))
+levels(meta$cl) <- c("lightblue","darkblue")
+meta$cl <- as.character(meta$cl)
+
+d <- dist(t(vsd_mat))
+hc <- hclust(d, method="complete")
+
+# Plot clustering, identifying sample and color coding by status:
+pdf("Outputs/NormalisedFiltered_Clustering.pdf", width=25, height=10)
+myplclust(hc, labels=meta$cordBlood_ID, lab.col=meta$cl, cex=1.5, main="Samples Clustering (complete)")
+legend("topright",legend=c("normal", "low"), cex = 1,
+       text.col=c("lightblue","darkblue"), pch=rep(16,2),col=c("lightblue","darkblue"))
+dev.off()
+
+# Hierarchical Clustering ----
+hclDat <-  t(vsd_mat) %>% dist(method = "euclidean") %>%
+  hclust()
+ggdendrogram(hclDat, rotate=TRUE, scale.color=statusCols)
+
+# more customized dendrogram
+dendro.dat <- as.dendrogram(hclDat) %>% dendro_data()
+
+dendro.dat$labels <- dendro.dat$labels %>%
+  left_join(meta, by = c(label = "sample"))
+
+ggplot(dendro.dat$segment) +
+  geom_segment(aes(x = x, y = y, xend = xend, yend = yend)) +
+  geom_label(data = dendro.dat$labels,
+             aes(x = x, y = y, label = label,fill = group),hjust = 0, nudge_y = 1) +
+  #scale_fill_manual(values = samgrpCols) +
+  coord_flip() +
+  labs(x = NULL, y = "Distance", title = NULL, fill = "Sample Group") +
+  scale_y_reverse(expand = c(0.3, 0)) +
+  theme(axis.title.y = element_blank(), axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(), panel.background = element_blank())
+
+# Cluster Plots 
+bw.bar <- c("grey75","darkblue")
+bw.bar <- bw.bar[as.numeric(as.factor(meta$bw))]
+
+d <- dist(t(vsd_mat))
+hc <- hclust(d, method="average")
+dend <- as.dendrogram(hc)
+dend <- color_branches(dend, k=2, col=c("darkgreen","darkred"))
+
+# Draw dendrogram
+plot(dend)
+colored_bars(colors=bw.bar, dend=dend, rowLabels=c("bw")) # needed ?
+legend("topright", legend=c("normal", "low"), pch=15, bty="n", col=c("darkblue","grey75"))
+
+# Gender Clustering ----
+# X: XIST (ENSG00000229807), Y: RPS4Y1 (ENSG00000129824), Y: EIF1AY (ENSG00000198692)
+# Y: DDX3Y (ENSG00000067048), Y: KDM5D (ENSG00000012817)
+
+# Subset the normalised counts to the sex-linked genes:
+sex.genes <- c("ENSG00000229807","ENSG00000129824","ENSG00000198692","ENSG00000067048","ENSG00000012817")
+norm.sex <- subset(normalized_counts, rownames(normalized_counts) %in% sex.genes)
+dim(norm.sex)
+
+# Cluster plot of sex-linked genes:
+BW <- c("skyblue","grey75")
+BW <- BW[as.numeric(as.factor(meta$bw))]
+Sex <- c("darkred","darkblue")
+Sex <- Sex[as.numeric(as.factor(meta$sex))]
+
+d <- dist(t(norm.sex))
+hc <- hclust(d, method="average")
+dend <- as.dendrogram(hc)
+
+pdf("EDA_CB/SexLinkGenes_EuclideanAvgClustering.pdf", width=50, height=10)
+par(mar=c(10,7,2,4))
+plot(dend)
+colored_bars(colors=BW, dend=dend, rowLabels=c("BW"))
+dev.off()
+
+# Dendrogram + Heatmap to visualize Euclidean distances ----
+raw.dist <- dist(t(assay(vsd)))
+colz <- colorRampPalette(brewer.pal(9, "Blues"))(255)
+
+Heatmap(as.matrix(raw.dist), col = colz,
+  name = "Euclidean\ndistance",
+  cluster_rows = hclust(raw.dist),
+  cluster_columns = hclust(raw.dist),
+  bottom_annotation = columnAnnotation(birthweight = vsd$bw,
+    col = list(sex = c(Female = "pink2", Male = "lightblue3"),
+               birthweight  = c(low = "forestgreen", normal = "lightgreen")))
+) # rearrange similar samples if cluster not required
+
+# Correlation plot ----
+CorMat <- cor(vsd_mat) # create cor matrix
+
+corrplot(CorMat, order = 'hclust',
+         addrect = 2, addCoef.col = 'white',  # split clusters into group & surround with rectangle
+         number.cex = 0.7)
+corrplot(CorMat, method = 'square', type = 'lower', diag = FALSE)
+
+# clustering + heatmap of correlation matrix
+pheatmap(CorMat, annotation_col = heatmapColAnnot, color = colz,
+         border_color=NA, fontsize = 10, fontsize_row = 10, height=20)
+
+# split the clusters into *two* based on the clustering similarity
+pheatmap(CorMat,
+         annotation_col = heatmapColAnnot,
+         color = colz,
+         cutree_cols = 2 ) # may use cutree_rows
+
+# Corplot of top var genes in all samples
+corVar <- cor(vsd_mat[topVarGenes,])
+rownames(corVar) <- str_c(meta$bw, "_", meta$sex)
+colnames(corVar) <- str_c(meta$bw, "_", meta$sex)
+corrplot(corVar, 
+         method = "color", 
+         addCoef.col = "black", 
+         number.digits= 3,
+         order = "hclust",
+         is.corr = FALSE)
+
+# Highly expressed genes common in PL & CB groups ----
+PL_geneTop <- as.data.frame(top.exp) %>%
+  rownames_to_column("Gene")
+CB_geneTop <- as.data.frame(top.expCB) %>%
+  rownames_to_column("Gene")
+
+genesTop_PL_CB <- inner_join(PL_geneTop, CB_geneTop, by = "Gene")
+
+# add symbols to them after next session
+genesTop_PL_CB <- genesTop_PL_CB %>%
+  inner_join(anno.genes, by = c("Gene" = "gene_id"))
+write.csv(genesTop_PL_CB, "Hi_Exp_CB-PL.csv")
+
+TopExpVenn <- list(Placenta=PL_geneTop$Gene, CordBlood=CB_geneTop$Gene)
+
+# draw Venn Diagram ----
+ggvenn(TopExpVenn, fill_color = c("lightblue3", "magenta4"), stroke_color = F)
+
+# Calculate mean expression across samples for each gene ----
+mean_pl <- rowMeans(PL_gene_counts)
+mean_cb <- rowMeans(gene_counts)
+
+# Combine the data into a single data frame
+df_comparison <- tibble(
+  Mean_Expression = c(mean_pl, mean_cb),
+  Tissue = c(rep("pl", length(mean_pl)), rep("cb", length(mean_cb)))
+)
+# Apply log2 transformation to the data (adding 1 to avoid log(0))
+df_comparison <- df_comparison %>%
+  mutate(Mean_Expression_Log = log2(Mean_Expression + 1))
+
+# Violin plot to visualize the distribution of the data
+ggplot(df_comparison, aes(x = Condition, y = Mean_Expression_Log, fill = Condition)) +
+  geom_violin(trim = FALSE) +  # Trim = FALSE includes the full distribution
+  labs(title = "Log-Transformed Gene Expression Comparison between pl and cb",
+       y = "Mean Expression", x = "Tissue") +
+  scale_fill_manual(values = c("pl" = "royalblue", "cb" = "darkred"))
+
+# Bar plot with mean and error bars (using standard deviation)
+ggplot(df_comparison, aes(x = Tissue, y = Mean_Expression_Log, fill = Tissue)) +
+  stat_summary(fun = "mean", geom = "bar", position = "dodge", width = 0.6) +
+  stat_summary(fun.data = "mean_se", geom = "errorbar", width = 0.2) +
+  labs(title = "Log-Transformed Gene Expression Comparison between pl and cb",
+       y = "Mean Expression", x = "Tissue") +
+  scale_fill_manual(values = c("pl" = "royalblue", "cb" = "darkred"))
+
+# Density plot to compare distributions between tissues
+ggplot(df_comparison, aes(x = Mean_Expression_Log, fill = Tissue)) +
+  geom_density(alpha = 0.4) +  # Use alpha to adjust transparency
+  labs(title = "Log-Transformed Gene Expression Comparison between pl and cb",
+       y = "Mean Expression", x = "Tissue") + theme_bw()+
+  scale_fill_manual(values = c("pl" = "royalblue", "cb" = "darkred"))
