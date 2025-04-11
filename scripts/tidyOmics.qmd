@@ -4,11 +4,18 @@ format: pptx
 editor: visual
 ---
 
-## Bullets
+## Load Libraries and data
 
 ```{r}
 library(tidySummarizedExperiment)
-#library(ggplot2)
+library(tidybulk)
+library(ggplot2)
+library(dplyr)
+library(org.Hs.eg.db)
+```
+
+```{r}
+gse <- readRDS("~/rna_seq/EDA/Outputs/gse_CB.RDS")
 ```
 
 ## Code
@@ -16,7 +23,7 @@ library(tidySummarizedExperiment)
 When you click the **Render** button a presentation will be generated that includes both content and the output of embedded code. You can embed code like this:
 
 ```{r}
-CB_gse %>% slice(2)
+gse %>% slice(2)
 ```
 
 ------------------------------------------------------------------------
@@ -25,19 +32,19 @@ CB_gse %>% slice(2)
 -   but i added code
 
 ```{r}
-CB_gse %>% select(.sample)
+gse %>% select(.sample)
 ```
 
 ```{r}
-CB_gse %>% distinct(.sample, bw, sex)
+gse %>% distinct(.sample, bw, sex)
 ```
 
 ```{r}
-CB_gse %>% distinct(gene_biotype)
+gse %>% distinct(gene_biotype)
 ```
 
 ```{r}
-CB_gse %>% rename(seq=libSize)
+gse %>% rename(seq=libSize)
 ```
 
 We could use `unite` to combine multiple columns into a single column.
@@ -57,7 +64,7 @@ CB_gse %>% group_by(bw) %>%
 Combine `group_by`, `mutate` and `filter` to get the transcripts with mean count \> 0.
 
 ```{r}
-CB_gse %>%
+gse %>%
     group_by(.feature) %>%
     mutate(mean_count=mean(counts)) %>%
     filter(mean_count > 0)
@@ -130,4 +137,119 @@ tss <- bind_ranges(bladder=bladder_g,
                    .id="gtissue") %>%
   anchor_5p() %>%
   mutate(width=1)
+```
+
+```{r}
+assay(gse, "counts") <- round(assay(gse, "counts"))
+
+gse <- addIds(gse, "SYMBOL")
+```
+
+```{r}
+# Glu metabolism
+tab <- AnnotationDbi::select(org.Hs.eg.db, "GO:0006006", "SYMBOL", "GO")
+
+tab <- tab[!duplicated(tab$SYMBOL),]
+glu <- tab$SYMBOL
+```
+
+here we create a new variable to plot the samples `sample_name`.
+
+```{r}
+
+gl_metab <- gse %>%
+  filter(line == "HK1") %>%
+  mutate(sample_name = .sample %>%
+           factor(levels = unique(.)),
+         condition = bw %>% factor(c("normal","low")))
+```
+
+```{r}
+gse <- gse %>%
+  keep_abundant(factor_of_interest = bw) %>%
+  scale_abundance(method="RLE") # DESeq2 scaling
+```
+
+```{r}
+# create log scaled plot
+gse |> ggplot(aes(.sample, counts_scaled + 1)) +
+  geom_boxplot() +  scale_y_log10()
+```
+
+genes involved in GLU metabolism, make a line plot, highlighting HK1
+
+```{r}
+gse %>%
+  filter(SYMBOL %in% glu) %>%
+  mutate(logcounts = log10(counts_scaled + 1)) %>%
+  mutate(HK = ifelse(SYMBOL == "HK1", "red2", "black")) %>%
+  group_by(.feature) %>%
+  mutate(logcounts = logcounts - mean(logcounts)) %>%
+  ungroup() %>%
+  ggplot(aes(.sample, logcounts, group=.feature, color=HK)) +
+  geom_point() +
+  geom_line() + theme_bw() +
+  scale_color_identity()
+```
+
+DE
+
+```{r}
+res <- gse |> test_differential_abundance(~bw, method = "DESeq2")
+```
+
+```{r}
+tidy_res <- res %>%
+  pivot_transcript()
+table(tidy_sig = tidy_res$padj < .1)
+```
+
+want to split the genes involved in pluripotency by the DE result (the significance and LFC), and then add the gene symbol to the side.
+
+```{r}
+plot_data <- res %>%
+  filter(SYMBOL %in% glu) %>%
+  mutate(logcounts = log10(counts_scaled + 1)) %>%
+  mutate(Hexokinase = ifelse(SYMBOL == "HK1", "red", "black")) %>%
+  group_by(.feature) %>%
+  mutate(logcounts = logcounts - mean(logcounts)) %>%
+  ungroup() %>%
+  mutate(gene_type = case_when(
+           padj < .1 & log2FoldChange > 0 ~ "up",
+           padj < .1 & log2FoldChange < 0 ~ "down",
+           TRUE ~ "null"))
+```
+
+```{r}
+library(ggrepel)
+plot_data %>%
+  filter(gene_type != "null") %>%
+  ggplot(aes(.sample, logcounts, group=.feature, color=Hexokinase)) +
+  geom_point() +
+  geom_line() +
+  geom_text_repel(data=plot_data %>%
+                    filter(.sample == "low", gene_type != "null"),
+                  aes(.sample, logcounts, label=SYMBOL),
+                  nudge_x=.5, seed=1, max.overlaps=Inf) +
+  scale_color_identity() +
+  facet_wrap(~gene_type) +
+  scale_x_discrete(expand = expansion(add = 2)) +
+  xlab("sample") + theme_bw()
+```
+
+```{r}
+norm.PCA <- gse |> reduce_dimensions(method = "PCA", .dims = 3)
+
+#norm.PCA |> pivot_sample() |> dplyr::select(contains("PC"), everything())
+
+norm.PCA |>
+	 pivot_sample() |>
+  GGally::ggpairs(columns = 3:5, ggplot2::aes(colour=bw))
+```
+
+```{r}
+
+gse.cibersort =
+	gse |>
+	deconvolve_cellularity(action="get", cores=8, prefix = "cibersort__")  
 ```
