@@ -11,6 +11,7 @@ library(tidySummarizedExperiment)
 library(tidybulk)
 library(ggplot2)
 library(dplyr)
+library(tximeta)
 library(org.Hs.eg.db)
 ```
 
@@ -114,7 +115,6 @@ CB_gse |>
 
 ```{r}
 library(TxDb.Hsapiens.UCSC.hg19.knownGene)
-library(org.Hs.eg.db)
 library(plyranges)
 ```
 
@@ -139,6 +139,8 @@ tss <- bind_ranges(bladder=bladder_g,
   mutate(width=1)
 ```
 
+## Tidy Bulk
+
 ```{r}
 assay(gse, "counts") <- round(assay(gse, "counts"))
 
@@ -157,29 +159,29 @@ here we create a new variable to plot the samples `sample_name`.
 
 ```{r}
 
-gl_metab <- gse %>%
-  filter(line == "HK1") %>%
+HK1 <- gse %>%
+  filter(sex == "Female") %>%
   mutate(sample_name = .sample %>%
            factor(levels = unique(.)),
          condition = bw %>% factor(c("normal","low")))
 ```
 
 ```{r}
-gse <- gse %>%
+HK1 <- HK1 %>%
   keep_abundant(factor_of_interest = bw) %>%
   scale_abundance(method="RLE") # DESeq2 scaling
 ```
 
 ```{r}
 # create log scaled plot
-gse |> ggplot(aes(.sample, counts_scaled + 1)) +
+HK1 |> ggplot(aes(.sample, counts_scaled + 1)) +
   geom_boxplot() +  scale_y_log10()
 ```
 
 genes involved in GLU metabolism, make a line plot, highlighting HK1
 
 ```{r}
-gse %>%
+HK1 %>%
   filter(SYMBOL %in% glu) %>%
   mutate(logcounts = log10(counts_scaled + 1)) %>%
   mutate(HK = ifelse(SYMBOL == "HK1", "red2", "black")) %>%
@@ -195,7 +197,7 @@ gse %>%
 DE
 
 ```{r}
-res <- gse |> test_differential_abundance(~bw, method = "DESeq2")
+HK1 <- HK1 |> test_differential_abundance(~bw, method = "DESeq2")
 ```
 
 ```{r}
@@ -207,10 +209,10 @@ table(tidy_sig = tidy_res$padj < .1)
 want to split the genes involved in pluripotency by the DE result (the significance and LFC), and then add the gene symbol to the side.
 
 ```{r}
-plot_data <- res %>%
-  filter(SYMBOL %in% glu) %>%
+plot_data <- HK1 %>%
+  filter(SYMBOL %in% idz) %>%
   mutate(logcounts = log10(counts_scaled + 1)) %>%
-  mutate(Hexokinase = ifelse(SYMBOL == "HK1", "red", "black")) %>%
+  mutate(Hexokinase = ifelse(SYMBOL == "SLC25A39", "red", "black")) %>%
   group_by(.feature) %>%
   mutate(logcounts = logcounts - mean(logcounts)) %>%
   ungroup() %>%
@@ -251,5 +253,19 @@ norm.PCA |>
 
 gse.cibersort =
 	gse |>
-	deconvolve_cellularity(action="get", cores=8, prefix = "cibersort__")  
+	deconvolve_cellularity(action="get", cores=8, prefix = "cibersort_", .transcript = symbol)  
+```
+
+```{r}
+gse.cibersort |>
+	pivot_longer(
+		names_to= "Cell_type_inferred", 
+		values_to = "proportion", 
+		names_prefix ="cibersort_", 
+		cols=contains("cibersort_")
+	) |>
+  ggplot(aes(x=Cell_type_inferred, y=proportion, fill=bw)) +
+  geom_boxplot() +
+  facet_wrap(~bw) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), aspect.ratio=1/5)
 ```
