@@ -22,7 +22,7 @@ library(NbClust)
 library(ClassDiscovery)
 
 # import the sample sheet ----
-meta<-read_csv('Metadata.csv') # missing IDs ?
+meta<-read_csv('data/Metadata.csv') # missing IDs ?
 #Meta$sampleID <- paste0(meta$cordBlood_ID,'_', meta$bw)
 
 # Set directory path
@@ -65,6 +65,10 @@ table(rowData(gse)$gene_biotype)
 mRNA_genes <- gse[rowData(gse)$gene_biotype == "protein_coding", ]
 mRNA_genes@rowRanges@ranges@NAMES |> head()
 
+# keep other biotypes — but be selective, Avoid very low-confidence types
+# keep_types <- c("protein_coding", "lncRNA", "miRNA")
+# gse <- gse[rowData(gse)$gene_biotype %in% keep_types, ]
+
 # compare the library sizes of samples
 gse$libSize <-  colSums(assay(gse))
 colData(gse) |>
@@ -106,9 +110,6 @@ smoothScatter(cts[,1:2]) # better job with so many data points
 # take the log of counts & plot again
 logcts <- log10(cts + 1)
 smoothScatter(logcts[,1:2])
-
-# get a sense for the distribution of counts (log-scale)
-hist(logcts[,1])
 
 avg_expr <- rowMeans(gene_counts)
 
@@ -166,6 +167,19 @@ pheatmap(gene_counts[topVarGenes,], scale = 'row',
          show_rownames = FALSE,
          annotation_col = heatmapColAnnot)
 
+# compare raw counts per sample, across all genes
+sampleCounts <- data.frame(ID=rownames(gse),
+                           count=c(assay(gse)),
+                           batch=rep(gse$batch, each=nrow(gse)),
+                           sex=rep(gse$bw, each=nrow(gse)),
+                           condition=rep(gse$bw, each=nrow(gse)))
+# draw the ridgeplot
+ggplot(sampleCounts %>% filter(count>0),
+       aes(x=count, y=condition, fill=sex)) + 
+  ggridges::geom_density_ridges(quantile_lines=TRUE, quantiles=2, vline_color="darkred",
+                      scale=0.9, alpha=0.5) +
+  guides(scale="none") + scale_x_continuous(trans="log10") + theme_bw()
+
 ## Create the DESeq dataset object
 dds <- DESeqDataSet(gse, design = ~ bw)
 dds
@@ -189,10 +203,10 @@ saveRDS(vsd, file =paste0("vsd.RDS"))
 meanSdPlot(assay(vsd), ranks = FALSE)
 
 # Plot PCA ----
-plotPCA(vsd, intgroup="bw") # ntop= can be used 
+plotPCA(vsd, intgroup="sex") #, ntop = 2000 
 
 # alternate to show variances
-pcaData <- plotPCA(vsd, intgroup="bw", returnData=T)
+pcaData <- plotPCA(vsd, intgroup="bw", returnData=T) 
 
 percentVar <- round(100 * attr(pcaData, "percentVar"))
 ggplot(pcaData, aes(x = PC1, y = PC2)) +
@@ -202,10 +216,10 @@ ggplot(pcaData, aes(x = PC1, y = PC2)) +
   ylab(paste0("PC2: ", percentVar[2], "% variance")) +
   coord_fixed() 
 
-pcaData_vsd_grp <- plotPCA(vsd, intgroup = c("libSize"), returnData = TRUE)
-percentVar <- round(100 * attr(pcaData_vsd_grp, "percentVar"))
+pcaData_libSize <- plotPCA(vsd, intgroup = c("libSize"), returnData = TRUE)
+percentVar <- round(100 * attr(pcaData_libSize, "percentVar"))
 
-ggplot(pcaData_vsd_grp, aes(x = PC1, y = PC2)) +
+ggplot(pcaData_libSize, aes(x = PC1, y = PC2)) +
   geom_point(aes(color = libSize / 1e6), size = 3) +
   theme_bw() +
   xlab(paste0("PC1: ", percentVar[1], "% variance")) +
@@ -217,23 +231,19 @@ vsd_mat <- assay(vsd) # Input is a matrix of log transformed values
 pcData_add <- prcomp(t(vsd_mat))
 
 # Create data frame with metadata and additional PC values for input to ggplot
-df <- cbind(meta, pcData_add$x)
-ggplot(df) +
-  geom_point(aes(x=PC1, y=PC5, color = group)) + theme_bw()
-
-# PCA plot with sample lables 
-autoplot(pcData_add, data = meta, colour = 'bw', shape='sex', size=3) +
-  geom_text_repel(aes(x = PC1, y = PC2, label = cordBlood_ID), box.padding = 0.8)
+df_PC <- cbind(meta, pcData_add$x)
+ggplot(df_PC) +
+  geom_point(aes(x=PC1, y=PC3, color = bw)) + theme_bw()
 
 # count density for all samples, by group
 vsd_mat %>% 
   as.data.frame() %>% 
   pivot_longer(names_to = "sample", values_to = "logCounts", everything()) %>% 
-  left_join(meta) %>% 
+  left_join(meta, by=c("sample","cordBlood_ID")) %>% 
   ggplot(aes(x=logCounts, group = sample)) +
   geom_density(aes(colour = bw)) +
   #scale_colour_manual(values = statusCols) +
-  labs(x = "log of Counts", title = "Gene exp count density")
+  labs(x = "log of Counts", title = "Gene expression count density")
 
 # batches in the PCA plot after vst ----
 mm <- model.matrix(~bw, colData(vsd))
@@ -244,10 +254,10 @@ plotPCA(vsd, intgroup='bw')
 # PCAtools
 p <- pca(vsd_mat, metadata = colData(dds), removeVar = 0.1)
 screeplot(p, axisLabSize = 12, titleLabSize = 12)
+biplot(p, colby = 'bw', shape = 'sex')
 biplot(p, showLoadings = TRUE,
        labSize = 5, pointSize = 5, sizeLoadingsNames = 5)
 pairsplot(p)
-biplot(p, colby = 'bw')
 
 # CLUSTERING OF NORMALISED, FILTERED DATA ----
 meta$cl <- as.factor(meta$bw)
@@ -259,28 +269,26 @@ d <- dist(t(vsd_mat))
 hc <- hclust(d, method="complete")
 
 # Plot clustering, identifying sample and color coding by status:
-pdf("Outputs/NormalisedFiltered_Clustering.pdf", width=25, height=10)
+pdf("output/NormalisedFiltered_Clustering.pdf", width=25, height=10)
 myplclust(hc, labels=meta$cordBlood_ID, lab.col=meta$cl, cex=1.5, main="Samples Clustering (complete)")
 legend("topright",legend=c("normal", "low"), cex = 1,
        text.col=c("lightblue","darkblue"), pch=rep(16,2),col=c("lightblue","darkblue"))
 dev.off()
 
-# Hierarchical Clustering ----
+# Hierarchical Clustering
 hclDat <-  t(vsd_mat) %>% dist(method = "euclidean") %>%
   hclust()
-ggdendrogram(hclDat, rotate=TRUE, scale.color=statusCols)
 
-# more customized dendrogram
 dendro.dat <- as.dendrogram(hclDat) %>% dendro_data()
 
 dendro.dat$labels <- dendro.dat$labels %>%
-  left_join(meta, by = c(label = "sample"))
+  left_join(meta, by = c(label = "cordBlood_ID"))
 
 ggplot(dendro.dat$segment) +
   geom_segment(aes(x = x, y = y, xend = xend, yend = yend)) +
   geom_label(data = dendro.dat$labels,
-             aes(x = x, y = y, label = label,fill = group),hjust = 0, nudge_y = 1) +
-  #scale_fill_manual(values = samgrpCols) +
+             aes(x = x, y = y, label = label,fill = bw),hjust = 0, nudge_y = 1) +
+  scale_fill_manual(values = statusCols) +
   coord_flip() +
   labs(x = NULL, y = "Distance", title = NULL, fill = "Sample Group") +
   scale_y_reverse(expand = c(0.3, 0)) +
@@ -311,9 +319,8 @@ norm.sex <- subset(normalized_counts, rownames(normalized_counts) %in% sex.genes
 dim(norm.sex)
 
 # Cluster plot of sex-linked genes:
-BW <- c("skyblue","grey75")
-BW <- BW[as.numeric(as.factor(meta$bw))]
-Sex <- c("darkred","darkblue")
+BW <- bw.bar[as.numeric(as.factor(meta$bw))]
+Sex <- c("darkred","orange")
 Sex <- Sex[as.numeric(as.factor(meta$sex))]
 
 d <- dist(t(norm.sex))
@@ -335,8 +342,8 @@ Heatmap(as.matrix(raw.dist), col = colz,
   cluster_rows = hclust(raw.dist),
   cluster_columns = hclust(raw.dist),
   bottom_annotation = columnAnnotation(birthweight = vsd$bw,
-    col = list(sex = c(Female = "pink2", Male = "lightblue3"),
-               birthweight  = c(low = "forestgreen", normal = "lightgreen")))
+    col = list(sex = c(Female = "pink2", Male = "steelblue"),
+               birthweight  = c(low = "forestgreen", normal = "lightblue3")))
 ) # rearrange similar samples if cluster not required
 
 # Correlation plot ----
