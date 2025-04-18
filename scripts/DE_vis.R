@@ -13,7 +13,7 @@ suppressPackageStartupMessages({
 project <- "EDA_CB"
 gse <- read_rds('FS/EDA/gse.RDS')
 # Re-create DESeq2 dataset if the design formula has changed after QC
-dds <- DESeqDataSet(gse, design = ~ sex + bw) # variable of interest at the end of formula
+dds <- DESeqDataSet(gse, design = ~ sex + bw) # variable of interest at the end
 dds
 levels(dds$bw) # make sure the control level is the first (ref) level, else relevel
 dds$bw <- factor(dds$bw, levels = c("normal","low"))
@@ -30,11 +30,6 @@ pdf("FS/DE/CooksCutoff_NoBatchCorrection.pdf", width=40, height=7)
 boxplot(log10(assays(dds)[["cooks"]]), range=0, las=2)
 dev.off()
 
-# dds object transformation
-vsd <- vst(dds, blind=F) # check vst
-saveRDS(vsd,file =paste0('FS/DE/',project,"_rld.RDS"))
-saveRDS(dds,file =paste0('FS/DE/',project,"_dds.RDS"))
-
 # Extract DESeq2 results
 res <- results(dds, alpha=0.05)
 res
@@ -47,6 +42,7 @@ sum(res$padj < 0.05, na.rm=TRUE)
 # Output normalized counts to save as a file
 normalized_counts <- counts(dds, normalized=TRUE)
 write.csv(normalized_counts, 'FS/DE/normalized_counts.csv', row.names = TRUE)
+saveRDS(dds,file =paste0('FS/DE/',project,"_dds.RDS"))
 
 # distribution of p-values
 #hist(res$pvalue[res$baseMean > 1], col="tan", main = "Non-adjusted p-value distribution")

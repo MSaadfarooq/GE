@@ -66,7 +66,7 @@ mRNA_genes <- gse[rowData(gse)$gene_biotype == "protein_coding", ]
 mRNA_genes@rowRanges@ranges@NAMES |> head()
 
 # keep other biotypes — but be selective, Avoid very low-confidence types
-# keep_types <- c("protein_coding", "lncRNA", "miRNA")
+# keep_types <- c("protein_coding", "lncRNA")
 # gse <- gse[rowData(gse)$gene_biotype %in% keep_types, ]
 
 # compare the library sizes of samples
@@ -82,8 +82,8 @@ colData(gse) |>
 gene_counts <- assay(gse) %>% 
   round() %>% 
   data.frame()
-saveRDS(gse, 'Outputs/gse_CB.RDS')  # gse <- readRDS("gse.RDS")
-write.csv(gene_counts, 'Outputs/gene_counts.csv', row.names = TRUE)
+write.csv(gene_counts, 'output/gene_counts.csv', row.names = TRUE)
+save(gse, gene_counts, meta, file = '../cb.rda')  # gse <- load("cb.rda")
 
 # RNA-seq counts distribution
 ggplot(gene_counts) +
@@ -153,20 +153,6 @@ colnames(top.exp)<- meta$gestational_age
 head(top.exp)
 pheatmap(top.exp, cluster_cols = F, labels_row = F)
 
-# Clustering genes most variable across samples ----
-VarGenes <- apply(gene_counts, 1, var) # compute variance of each gene
-
-#sort the results by variance in decreasing order and select the top 100 genes
-topVarGenes <- names(VarGenes[order(VarGenes, decreasing = T)][1:100])
-
-pheatmap(gene_counts[topVarGenes,], scale = 'row', show_rownames = FALSE)
-
-# overlay some annotation tracks to observer replicate clustering
-heatmapColAnnot <- data.frame(colData(gse)[, c("bw", "sex")])
-pheatmap(gene_counts[topVarGenes,], scale = 'row',
-         show_rownames = FALSE,
-         annotation_col = heatmapColAnnot)
-
 # compare raw counts per sample, across all genes
 sampleCounts <- data.frame(ID=rownames(gse),
                            count=c(assay(gse)),
@@ -181,7 +167,7 @@ ggplot(sampleCounts %>% filter(count>0),
   guides(scale="none") + scale_x_continuous(trans="log10") + theme_bw()
 
 ## Create the DESeq dataset object
-dds <- DESeqDataSet(gse, design = ~ bw)
+dds <- DESeqDataSet(gse, design = ~ bw + sex)
 dds
 # variance increases with the average read count
 meanSdPlot(assay(dds), ranks = FALSE)
@@ -199,14 +185,13 @@ vd <- VisualizeDesign(sampleData = coldata[, c("sex", "bw")],
 
 # Transform counts for data visualization
 vsd <- vst(dds, blind=TRUE)
-saveRDS(vsd, file =paste0("vsd.RDS"))
 meanSdPlot(assay(vsd), ranks = FALSE)
 
 # Plot PCA ----
 plotPCA(vsd, intgroup="sex") #, ntop = 2000 
 
 # alternate to show variances
-pcaData <- plotPCA(vsd, intgroup="bw", returnData=T) 
+pcaData <- plotPCA(vsd, intgroup="sex", returnData=T) 
 
 percentVar <- round(100 * attr(pcaData, "percentVar"))
 ggplot(pcaData, aes(x = PC1, y = PC2)) +
@@ -233,16 +218,16 @@ pcData_add <- prcomp(t(vsd_mat))
 # Create data frame with metadata and additional PC values for input to ggplot
 df_PC <- cbind(meta, pcData_add$x)
 ggplot(df_PC) +
-  geom_point(aes(x=PC1, y=PC3, color = bw)) + theme_bw()
+  geom_point(aes(x=PC1, y=PC4, color = bw)) + theme_bw()
 
 # count density for all samples, by group
-vsd_mat %>% 
-  as.data.frame() %>% 
-  pivot_longer(names_to = "sample", values_to = "logCounts", everything()) %>% 
-  left_join(meta, by=c("sample","cordBlood_ID")) %>% 
+as.data.frame(vsd_mat) %>%
+  pivot_longer(names_to = "sample",
+    values_to = "logCounts", everything()) %>% 
+  left_join(meta, by = c("sample" = "cordBlood_ID")) %>% 
   ggplot(aes(x=logCounts, group = sample)) +
   geom_density(aes(colour = bw)) +
-  #scale_colour_manual(values = statusCols) +
+  scale_colour_manual(values = statusCols) +
   labs(x = "log of Counts", title = "Gene expression count density")
 
 # batches in the PCA plot after vst ----
@@ -258,6 +243,7 @@ biplot(p, colby = 'bw', shape = 'sex')
 biplot(p, showLoadings = TRUE,
        labSize = 5, pointSize = 5, sizeLoadingsNames = 5)
 pairsplot(p)
+plotloadings(p, components = getComponents(p, c(1:4)))
 
 # CLUSTERING OF NORMALISED, FILTERED DATA ----
 meta$cl <- as.factor(meta$bw)
@@ -280,7 +266,6 @@ hclDat <-  t(vsd_mat) %>% dist(method = "euclidean") %>%
   hclust()
 
 dendro.dat <- as.dendrogram(hclDat) %>% dendro_data()
-
 dendro.dat$labels <- dendro.dat$labels %>%
   left_join(meta, by = c(label = "cordBlood_ID"))
 
@@ -333,18 +318,30 @@ plot(dend)
 colored_bars(colors=BW, dend=dend, rowLabels=c("BW"))
 dev.off()
 
-# Dendrogram + Heatmap to visualize Euclidean distances ----
+# Heatmap + Dendrogram ----
 raw.dist <- dist(t(assay(vsd)))
 colz <- colorRampPalette(brewer.pal(9, "Blues"))(255)
 
 Heatmap(as.matrix(raw.dist), col = colz,
   name = "Euclidean\ndistance",
+  cluster_columns = hclust(raw.dist), show_column_names = FALSE,
   cluster_rows = hclust(raw.dist),
-  cluster_columns = hclust(raw.dist),
-  bottom_annotation = columnAnnotation(birthweight = vsd$bw,
-    col = list(sex = c(Female = "pink2", Male = "steelblue"),
-               birthweight  = c(low = "forestgreen", normal = "lightblue3")))
+  bottom_annotation = columnAnnotation(Birthweight = vsd$bw, Sex=vsd$sex,
+    col = list(Sex = c(female = "pink2", male = "steelblue"),
+               Birthweight  = c(low = "forestgreen", normal = "lightblue3")))
 ) # rearrange similar samples if cluster not required
+
+# Clustering genes most variable across samples ----
+VarGenes <- apply(gene_counts, 1, var) # compute variance of each gene
+
+#sort the results by variance in decreasing order and select the top 100 genes
+topVarGenes <- names(VarGenes[order(VarGenes, decreasing = T)][1:100])
+
+# overlay some annotation tracks to observer replicate clustering
+heatmapColAnnot <- data.frame(colData(gse)[, c("bw", "sex")])
+pheatmap(gene_counts[topVarGenes,], scale = 'row',
+         show_rownames = FALSE,
+         annotation_col = heatmapColAnnot)
 
 # Correlation plot ----
 CorMat <- cor(vsd_mat) # create cor matrix
@@ -354,15 +351,10 @@ corrplot(CorMat, order = 'hclust',
          number.cex = 0.7)
 corrplot(CorMat, method = 'square', type = 'lower', diag = FALSE)
 
-# clustering + heatmap of correlation matrix
-pheatmap(CorMat, annotation_col = heatmapColAnnot, color = colz,
-         border_color=NA, fontsize = 10, fontsize_row = 10, height=20)
-
-# split the clusters into *two* based on the clustering similarity
-pheatmap(CorMat,
-         annotation_col = heatmapColAnnot,
-         color = colz,
-         cutree_cols = 2 ) # may use cutree_rows
+# split the clusters into *2* based on the clustering similarity
+pheatmap(CorMat, # border_color=NA,
+         color = colz, annotation_col = heatmapColAnnot,
+         cutree_cols = 2) # may use cutree_rows
 
 # Corplot of top var genes in all samples
 corVar <- cor(vsd_mat[topVarGenes,])
