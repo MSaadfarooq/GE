@@ -58,10 +58,7 @@ gse %>% unite('SampType', c(names, bw), sep = "_")
 ```
 
 ```{r}
-CB_gse %>% group_by(bw) %>%
-    summarise(total_counts=sum(counts))
-
-CB_gse %>% group_by(bw) %>%
+gse %>% group_by(bw) %>%
     summarise(mean_count=mean(counts))
 ```
 
@@ -110,10 +107,10 @@ gse %>%
 ```
 
 ```{r}
-counts_SE |> 
-  filter(.feature %in% c("CB0002","CB0017")) |> 
+gse |>
+  filter(.feature %in% c("ENSG00000000460","ENSG00000001167")) |> 
   ggplot(aes(bw, counts, color=sex, group=sex)) + 
-  geom_point(size=2) + geom_line() #+ facet_wrap(~.feature)
+  geom_point(size=2) + geom_line() + facet_wrap(~.feature)
 ```
 
 ## Tidy Bulk
@@ -123,11 +120,12 @@ counts_SE |>
 We may want to compensate for sequencing depth, scaling the transcript abundance (e.g., with TMM algorithm). `scale_abundance` takes a tibble, column names (as symbols; for `sample`, `transcript` and `count`) and a method as arguments and returns a tibble with additional columns with scaled data as <NAME OF COUNT COLUMN>\_scaled.
 
 ```{r}
-se_norm_count <- gse |> identify_abundant(factor_of_interest = bw) |>  scale_abundance()
+gse_norm <- gse |> identify_abundant(factor_of_interest = bw) |>  scale_abundance()
 ```
 
 ```{r}
-se_norm_count |>
+# plot the scaled density to check the scaling outcome
+gse_norm |>
     ggplot(aes(counts_scaled + 1, group=.sample, color=bw)) +
     geom_density() +
     scale_x_log10() + 
@@ -136,16 +134,16 @@ se_norm_count |>
 
 ### Filter `variable transcripts`
 
-In some experiments, we may want to identify an dfilter variable transcripts. Especially, when integrating with methylation data to identify DNAm probe beta value associate with gene expression, we want to make sure we save compute time by filtering to varaible genes.
+In some experiments, we may want to identify and filter variable transcripts. Especially, when integrating with methylation data to identify DNAm probe beta value associate with gene expression, we want to make sure we save compute time by filtering to varaible genes.
 
 ```{r}
-SE.norm.Var <- counts_SE.norm |> keep_variable()
+gse_norm.Var <- gse_norm |> keep_variable()
 ```
 
 ### PCA
 
 ```{r}
-norm.PCA <- se_norm_count |> reduce_dimensions(method = "PCA", .dims = 3)
+norm.PCA <- gse_norm |> reduce_dimensions(method = "PCA", .dims = 3)
 
 norm.PCA |> pivot_sample() |> dplyr::select(contains("PC"), everything())
 
@@ -179,11 +177,16 @@ It returns tibble with stats results.
 ```{r}
 assay(gse, "counts") <- round(assay(gse, "counts"))
 
-gse <- addIds(gse, "SYMBOL")
+#gse <- addIds(gse, "SYMBOL")
 ```
 
 ```{r}
 da <- gse |> test_differential_abundance(~bw, method = "DESeq2")
+```
+
+```{r}
+da_res <- da %>% pivot_transcript()
+table(tidy_sig = da_res$padj < .1)
 ```
 
 ### Adjust `counts`
@@ -191,7 +194,7 @@ da <- gse |> test_differential_abundance(~bw, method = "DESeq2")
 We may want to adjust `counts` for (known) unwanted variation. `adjust_abundance` takes as arguments a tibble, column names (as symbols; for `sample`, `transcript` and `count`) and a formula representing the desired linear model where the first covariate is the factor of interest and the second covariate is the unwanted variation, and returns a tibble with additional columns for the adjusted counts as `<COUNT COLUMN>_adjusted`
 
 ```{r}
-se.norm.adj <- counts_SE.norm |>
+gse_norm.adj <- gse_norm |>
   adjust_abundance(.factor_unwanted = batch,
                    .factor_of_interest = bw, method="combat")
 ```
@@ -221,7 +224,7 @@ gse.cibersort |>
 #### Differential cell-type abundance
 
 ```{r}
-gse |> test_differential_cellularity( ~ bw, .transcript = symbol)
+gse |> test_differential_cellularity( ~ bw)
 ```
 
 ```{r}
@@ -294,19 +297,13 @@ HK1 %>%
   scale_color_identity()
 ```
 
-### DE
-
-```{r}
-tidy_res <- res %>%
-  pivot_transcript()
-table(tidy_sig = tidy_res$padj < .1)
-```
+### DE plot
 
 want to split the genes involved in pluripotency by the DE result (the significance and LFC), and then add the gene symbol to the side.
 
 ```{r}
-plot_data <- HK1 %>%
-  filter(SYMBOL %in% idz) %>%
+plot_data <- HK1 %>% # after DE on HK1
+  filter(SYMBOL %in% glu) %>%
   mutate(logcounts = log10(counts_scaled + 1)) %>%
   mutate(Hexokinase = ifelse(SYMBOL == "SLC25A39", "red", "black")) %>%
   group_by(.feature) %>%
@@ -315,7 +312,7 @@ plot_data <- HK1 %>%
   mutate(gene_type = case_when(
            padj < .1 & log2FoldChange > 0 ~ "up",
            padj < .1 & log2FoldChange < 0 ~ "down",
-           TRUE ~ "null"))
+           TRUE ~ "null")) #table(plot_data$gene_type)
 ```
 
 ```{r}
