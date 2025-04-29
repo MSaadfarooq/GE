@@ -11,33 +11,33 @@ suppressPackageStartupMessages({
 })
 ## Simple project ID
 project <- "EDA_CB"
-gse <- read_rds('FS/EDA/gse.RDS')
+gse <- read_rds('FS/EDA/gse.RDS') # load("~/rna_seq/cb.rda")
+gse$bw <- fct(gse$bw, levels = c("normal","low"))
+
 # Re-create DESeq2 dataset if the design formula has changed after QC
 dds <- DESeqDataSet(gse, design = ~ sex + bw) # variable of interest at the end
-dds
-levels(dds$bw) # make sure the control level is the first (ref) level, else relevel
-dds$bw <- factor(dds$bw, levels = c("normal","low"))
+
+levels(dds$bw) # make sure the control level is the first (ref) level
 
 ## Run DESeq ----
-dds <- DESeq(dds, parallel = TRUE, BPPARAM = MulticoreParam(8))
+dds <- DESeq(dds, parallel = TRUE, BPPARAM = MulticoreParam(28))
 
 # Plot dispersions
-pdf('FS/DE/disp.pdf')
+pdf('figures/disp.pdf')
 plotDispEsts(dds, main="Dispersion plot")
 dev.off()
 # approach-to-count-outliers
-pdf("FS/DE/CooksCutoff_NoBatchCorrection.pdf", width=40, height=7)
+pdf("figures/CooksCutoff_NoBatchCorrection.pdf", width=40, height=7)
 boxplot(log10(assays(dds)[["cooks"]]), range=0, las=2)
 dev.off()
 
-# Extract DESeq2 results
-res <- results(dds, alpha=0.05)
+# Extract DESeq2 results, or alpha=0.05
+res <- results(dds) 
 res
 resultsNames(dds)
-summary(res, alpha=0.05)
+summary(res, alpha=0.05) # sum(res$padj < 0.05, na.rm=TRUE)
 
 head(res[order(res$pvalue), ]) # order by lowest p-value
-sum(res$padj < 0.05, na.rm=TRUE)
 
 # Output normalized counts to save as a file
 normalized_counts <- counts(dds, normalized=TRUE)
@@ -45,9 +45,9 @@ write.csv(normalized_counts, 'FS/DE/normalized_counts.csv', row.names = TRUE)
 saveRDS(dds,file =paste0('FS/DE/',project,"_dds.RDS"))
 
 # distribution of p-values
-#hist(res$pvalue[res$baseMean > 1], col="tan", main = "Non-adjusted p-value distribution")
+hist(res$pvalue[res$baseMean > 1], col="tan", main = "p-value distribution")
 # distribution of adjusted p-values
-#hist(res$padj[res$baseMean > 1], col="lightblue", main = "Adjusted p-value distribution")
+hist(res$padj[res$baseMean > 1], col="lightblue", main = "Adjusted p-value distribution")
 
 # filtering threshold that has been used to filter low count genes
 #metadata(res)$filterThreshold #genes with basemean < [output] have been filtered
@@ -59,44 +59,38 @@ as_tibble(metadata(res)$filterNumRej) %>%
              color = 'red')
 ggsave('FS/DE/filtThreshold.jpeg')
 ## Gene-level filtering ----
-# Filter genes by zero expression
-#res[which(res$baseMean == 0),] %>% 
-  #data.frame() %>% 
-  #View()
+res[which(res$baseMean == 0),] %>%
+data.frame() %>%
+View()  # Filter genes by zero expression
 
 # Filter genes that have an extreme outlier - summary(res)
-#res[which(is.na(res$pvalue) & 
-  #                 is.na(res$padj) &
-  #                 res$baseMean > 0),] %>% 
-  # data.frame() %>% View()
+res[which(is.na(res$pvalue) & is.na(res$padj) & res$baseMean > 0),] %>%
+data.frame() %>% View()
 
 # explore the relationship between LFC, significant DEGs and the genes mean count
-# plotMA(res)
+plotMA(res)
 
 # Independent Filtering and log-fold shrinkage
-res_Lfc <- lfcShrink(dds, coef = "bw_low_vs_normal", type="apeglm", parallel = T, BPPARAM = MulticoreParam(8))
+res_Lfc <- lfcShrink(dds, coef = "bw_low_vs_normal", type="apeglm", parallel = T, BPPARAM = MulticoreParam(28))
 pdf('FS/DE/MAplot.pdf')
 plotMA(res_Lfc)
 dev.off()
-# head(as.data.frame(res))
-# head(as.data.frame(rowRanges(gse)))
 
 # select the gene to plot by rowname or by numeric index
 # plotCounts(dds, gene=which.min(res$padj), intgroup=c("sex", 'bw'))
 
 ## Extract DE genes ----
 # Set thresholds
-padj.cutoff <- 0.05
-lfc.cutoff <- 1
+padj.cutoff <- 0.1
+lfc.cutoff <- 0.5
 DElist <- res %>%
   data.frame() %>%
   tibble::rownames_to_column(var="gene") %>% 
-  mutate(threshold=case_when(padj<=padj.cutoff & abs(log2FoldChange)>=lfc.cutoff~"Significant",T~"Not Significant")) %>%
-  arrange(padj) %>% as_tibble()
+  mutate(threshold=case_when(padj<=padj.cutoff & abs(log2FoldChange)>=lfc.cutoff~"Sig", T~"Not_Sig")) %>% arrange(padj) %>% as_tibble()
 
 # Subset the tibble to keep only significant genes
 sigDE <- DElist %>%
-  dplyr::filter(threshold=="Significant") # *look for 
+  dplyr::filter(threshold=="Sig") # *look for 
 
 # or to get df of sig p-adj
 sigDE.df <- as.data.frame(subset(res, padj < 0.05))
@@ -125,7 +119,7 @@ sigDE_anno <- sigDE %>%
   left_join(anno.genes, by = c("gene" = "gene_id")) %>%
   mutate(gene_biotype = as.factor(gene_biotype)) # biotype as a factor
 
-write.csv(sigDE_anno, file = "FS/DE/CB_sigDEGs.csv")
+write.csv(sigDE_anno, file = "output/CB_sigDEGs.csv")
 # saveRDS(sigDE_anno, 'FS/DE/CB_sigDE_anno.RDS')
 
 ##===========================##
@@ -157,7 +151,7 @@ vsd <- vst(dds, blind=F)
 
 # Get top 300 DE genes
 HM_genes <- res[order(res$padj), ] |>
-  head(300) |>
+  head(100) |>
   rownames()
 heatmapData <- assay(vsd)[HM_genes, ]
 
@@ -170,11 +164,9 @@ heatmapColAnnot <- HeatmapAnnotation(df = heatmapColAnnot)
 colors <- colorRampPalette(rev(brewer.pal(9, "RdBu")))(255)
 
 # Plot as Heatmap
-ComplexHeatmap::Heatmap(heatmapData,
-                        col = colors,
-                        top_annotation = heatmapColAnnot,
-                        cluster_rows = TRUE, show_row_names = FALSE,
-                        cluster_columns = T, column_dend_reorder = T)
+Heatmap(heatmapData, col = colors, top_annotation = heatmapColAnnot,
+        cluster_rows = TRUE, show_row_names = FALSE,
+        cluster_columns = T, column_dend_reorder = T)
 
 # Top 10 differentially expressed genes (by padj values) ----
 # Order results by padj values

@@ -61,11 +61,7 @@ gse # colData(), rowRanges(), assay()
 # assess types of RNA
 table(rowData(gse)$gene_biotype)
 
-# subsetting to only the mRNA genes
-mRNA_genes <- gse[rowData(gse)$gene_biotype == "protein_coding", ]
-mRNA_genes@rowRanges@ranges@NAMES |> head()
-
-# keep other biotypes — but be selective, Avoid very low-confidence types
+# subset biotypes — be selective, Avoid very low-confidence types
 # keep_types <- c("protein_coding", "lncRNA")
 # gse <- gse[rowData(gse)$gene_biotype %in% keep_types, ]
 
@@ -188,7 +184,7 @@ vsd <- vst(dds, blind=TRUE)
 meanSdPlot(assay(vsd), ranks = FALSE)
 
 # Plot PCA ----
-plotPCA(vsd, intgroup="sex") #, ntop = 2000 
+plotPCA(vsd, intgroup="bw") #, ntop = 2000 
 
 # alternate to show variances
 pcaData <- plotPCA(vsd, intgroup="sex", returnData=T) 
@@ -306,16 +302,18 @@ dim(norm.sex)
 # Cluster plot of sex-linked genes:
 BW <- bw.bar[as.numeric(as.factor(meta$bw))]
 Sex <- c("darkred","orange")
-Sex <- Sex[as.numeric(as.factor(meta$sex))]
+sex_labels <- as.factor(meta$sex)
+Sex_colors <- Sex[as.numeric(sex_labels)]
 
 d <- dist(t(norm.sex))
 hc <- hclust(d, method="average")
 dend <- as.dendrogram(hc)
 
-pdf("EDA_CB/SexLinkGenes_EuclideanAvgClustering.pdf", width=50, height=10)
+png("figures/ClustEuclideanAvg_SexGenes.png", width=2800, height=1000, res = 180)
 par(mar=c(10,7,2,4))
 plot(dend)
-colored_bars(colors=BW, dend=dend, rowLabels=c("BW"))
+colored_bars(colors=Sex_colors, dend=dend, rowLabels="sex")
+legend("topright", legend = levels(sex_labels), fill = c("darkred", "orange"), title = "Sex")
 dev.off()
 
 # Heatmap + Dendrogram ----

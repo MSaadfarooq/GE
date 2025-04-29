@@ -45,7 +45,7 @@ coords <- unique(info[c("gene","chr","start","end")])
 rownames(coords) <- coords[,1]
 coords$gene <- NULL
 
-# CREATE NOISEQ QC DATASET 
+# CREATE NOISEQ QC DATASET - meta: DF with sample rownames
 raw.noiseq <- readData(data=gene_counts, length=length, gc=gc, biotype=biotype, chromosome=coords, factors=meta)
 
 # BIOTYPE DISTRIBUTION:
@@ -53,7 +53,7 @@ raw.noiseq <- readData(data=gene_counts, length=length, gc=gc, biotype=biotype, 
 
 biodetection <- dat(raw.noiseq, k=0, type="biodetection", factor="bw")
 
-pdf("EDA_PL/BiotypeDistribution.pdf", width=10, height=5)
+pdf("figures/BiotypeDistribution.pdf", width=10, height=5)
 explo.plot(biodetection, samples=1)
 explo.plot(biodetection, plottype="persample", toplot="protein_coding")
 dev.off()
@@ -65,7 +65,7 @@ explo.plot(biodetection.comp, samples = c(1, 4), toplot="protein_coding", plotty
 # COUNT DISTRIBUTION global:
 counts <- dat(raw.noiseq, factor="bw", type="countsbio")
 
-pdf("EDA_PL/CountDistribution.pdf", width=10, height=5)
+pdf("figures/CountDistribution.pdf", width=10, height=5)
 explo.plot(counts, toplot="global", plottype="boxplot")
 explo.plot(counts, toplot = "protein_coding", plottype = "boxplot")
 explo.plot(counts, samples=1, toplot="global", plottype="boxplot")
@@ -75,7 +75,7 @@ dev.off()
 # SATURATION:
 saturation <- dat(raw.noiseq,type="saturation")
 
-pdf("EDA_PL/DetectedFeatures_vs_SeqDepth.pdf", width=10, height=10)
+pdf("figures/DetectedFeatures_vs_SeqDepth.pdf", width=10, height=10)
 explo.plot(saturation, toplot="global", samples=1:nrow(meta))
 explo.plot(saturation, toplot="protein_coding", samples=1:nrow(meta))
 dev.off()
@@ -83,12 +83,12 @@ dev.off()
 # PROTEIN CODING COUNT DISTRIBUTION:
 counts.samp <- dat(raw.noiseq, factor=NULL, type="countsbio")
 
-pdf("EDA_PL/ProteinCoding_CountDistribution.pdf", width=50, height=5)
+pdf("figures/ProteinCoding_CountDistribution.pdf", width=50, height=5)
 explo.plot(counts.samp, toplot="protein_coding", samples=NULL, plottype="boxplot")
 dev.off()
 
 # PERCENTAGE LOW COUNT FEATURES PER SAMPLE:
-pdf("EDA_PL/ProteinCoding_PercentLowCount.pdf", width=50, height=5)
+pdf("figures/ProteinCoding_PercentLowCount.pdf", width=50, height=5)
 explo.plot(counts.samp, toplot="protein_coding", samples=NULL, plottype="barplot")
 dev.off()
 
@@ -96,13 +96,13 @@ dev.off()
 # https://www.rdocumentation.org/packages/NOISeq/versions/2.16.0/topics/lengthbias
 len <- dat(raw.noiseq, factor="bw", type="lengthbias")
 
-pdf("EDA_PL/ProteinCoding_LenghBias.pdf", width=7, height=5)
+pdf("figures/ProteinCoding_LenghBias.pdf", width=7, height=5)
 explo.plot(len, samples=NULL, toplot="protein_coding")
 dev.off()
 
 # CHECK FOR GC BIAS (significant p-value + R2 > 70%):
 raw.gc <- dat(raw.noiseq, factor="bw", type="GCbias")
 
-pdf("EDA_PL/ProteinCoding_GCBias.pdf", width=7, height=5)
+pdf("figures/ProteinCoding_GCBias.pdf", width=7, height=5)
 explo.plot(raw.gc, samples=NULL, toplot="protein_coding")
 dev.off()
