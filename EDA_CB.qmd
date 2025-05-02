@@ -1,0 +1,341 @@
+---
+title: "EDA_CB"
+format: html
+editor: visual
+---
+
+## EDA of CB
+
+Prepare environment and load inputs
+
+```{r}
+#| echo: false
+suppressPackageStartupMessages({
+  library(DESeq2)
+  library(vsn)
+  library(tidyverse)
+  library(tximeta)
+  library(apeglm)
+  library(ComplexHeatmap)
+  library(RColorBrewer)
+})
+```
+
+```{r}
+#| eval: false
+#| echo: false
+library(ExploreModelMatrix)
+library(hexbin)
+library(iSEE)
+#library(clustertend)
+#library(NbClust)
+#library(ClassDiscovery)
+library(tidybulk)
+library(tidySummarizedExperiment)
+```
+
+```{r}
+load("~/rna_seq/cb.rda")
+gse$batch <- as.factor(gse$batch)
+gse$ga <- as.factor(gse$ga)
+```
+
+```{r}
+#| echo: false
+# define custom theme
+my_theme <-
+  list(
+    scale_fill_brewer(palette="Set1"),
+    scale_color_brewer(palette="Set1"),
+    theme_bw() +
+      theme(
+        panel.border=element_blank(),
+        axis.line=element_line(),
+        panel.grid.major=element_line(linewidth=0.2),
+        panel.grid.minor=element_line(linewidth=0.1),
+        text=element_text(size=12),
+        legend.position="bottom",
+        aspect.ratio=1,
+        strip.background=element_blank(),
+        axis.title.x=element_text(margin=margin(t=10, r=10, b=10, l=10)),
+        axis.title.y=element_text(margin=margin(t=10, r=10, b=10, l=10))
+      )
+  )
+```
+
+### Library sizes & Gene counts
+
+compare the library sizes of samples and get their gene counts df.
+
+```{r}
+gse$libSize <-  colSums(assay(gse))
+colData(gse) |>
+  as.data.frame() |>
+  ggplot(aes(x = names, y = libSize / 1e6, fill = bw)) + 
+  geom_bar(stat = "identity") + theme_bw() + 
+  labs(x = "Sample", y = "Total count in millions") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+
+# Write the counts to an object
+gene_counts <- assay(gse) %>% 
+  round() %>% 
+  data.frame()
+#write.csv(gene_counts, 'output/gene_counts.csv', row.names = TRUE)
+#save(gse, gene_counts, meta, file = '../cb.rda')  # gse <- load("cb.rda")
+```
+
+Explore gene counts
+
+```{r}
+#| echo: false
+#| eval: false
+
+ggplot(gene_counts) +
+  geom_histogram(aes(x = CB0003), stat = "bin", bins = 200) +
+  xlab("Raw expression counts") +
+  ylab("Number of genes")
+
+# Raw counts range
+summary(gene_counts)
+
+# few outliers affect distribution visualization
+boxplot(gene_counts, main='Raw counts', las=2)
+```
+
+```{r}
+# log2 of counts for transformation
+logcounts <- log2(gene_counts + 1)
+
+# make a colour vector
+statusCols <- case_when(gse$bw=="LBW" ~ "red3", 
+                        gse$bw=="NBW" ~ "orange")
+# Check distributions of samples using boxplots
+boxplot(logcounts,
+        xlab="",
+        ylab="Log2(Counts)",
+        las=2,
+        col=statusCols,
+        main="Log2(Counts)")
+legend("topright", legend = c("Low", "Normal"),fill = c("red3", "orange"), cex=0.7)
+```
+
+### DESeq dataset object
+
+```{r}
+
+dds <- DESeqDataSet(gse, design = ~ bw + sex)
+dds
+```
+
+```{r}
+# Transform counts for data visualization
+vsd <- vst(dds, blind=TRUE)
+meanSdPlot(assay(vsd), ranks = FALSE)
+```
+
+### PCA for all interesting variables
+
+```{r}
+
+pcaData <- plotPCA(vsd, intgroup="libSize", returnData=T) 
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+ggplot(pcaData, aes(x = PC1, y = PC2)) +
+  geom_point(aes(color = libSize), size = 3) +
+  theme_bw() +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed() 
+```
+
+PCA loop
+
+```{r}
+pc_vars <- c("bw","sex","ga","delivery","batch")
+
+for (variable in pc_vars) {
+  # Perform PCA
+  pcaData <- plotPCA(vsd, intgroup = variable, returnData = TRUE, ntop=1000)
+  percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+  # Create PCA plot
+  pca_plot <- ggplot(pcaData, aes(x = PC1, y = PC2)) +
+    geom_point(aes(color = .data[[variable]]), size = 3) + # Use .data[[variable]] for dynamic column name
+    xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+    ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+    coord_fixed() +
+    labs(color = variable) + # Set legend title to the variable name
+    ggtitle(paste("PCA Plot for", variable)) + my_theme
+  print(pca_plot)
+}
+```
+
+### Hierarchical Clustering
+
+```{r}
+vsd_mat <- assay(vsd) # matrix of transformed values
+# prepare dendrogram
+hclDat <-  t(vsd_mat) %>% dist(method = "euclidean") %>%
+  hclust()
+dendro.dat <- as.dendrogram(hclDat) %>% ggdendro::dendro_data()
+dendro.dat$labels <- dendro.dat$labels %>%
+  left_join(meta, by = c(label = "cordBlood_ID"))
+
+# plot
+ggplot(dendro.dat$segment) +
+  geom_segment(aes(x = x, y = y, xend = xend, yend = yend)) +
+  geom_label(data = dendro.dat$labels,
+             aes(x = x, y = y, label = label, fill = bw),
+             hjust = 0.5, vjust = 0, size = 2) + 
+  scale_fill_manual(values = statusCols) +
+  labs(x = NULL, y = "Distance", title = NULL, fill = "Sample Group") +
+  scale_y_reverse(expand = c(0.3, 0)) +
+  theme(axis.title.y = element_blank(), axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(), panel.background = element_blank()) +
+  my_theme + coord_flip() # Keep coord_flip if you prefer horizontal
+```
+
+### Gender Clustering
+
+General idea: gene expressions from female-specific XIST (ENSG00000229807) and Y-linked genes IF1AY (ENSG00000198692), KDM5D (ENSG00000012817), UTY, DDX3Y (ENSG00000067048), and RPS4Y1(ENSG00000129824) are indicative of sex.
+
+```{r}
+#| eval: false
+# Subset the normalised counts to the sex-linked genes:
+sex.genes <- c("ENSG00000229807","ENSG00000129824","ENSG00000198692","ENSG00000067048","ENSG00000012817")
+norm.sex <- subset(normalized_counts, rownames(normalized_counts) %in% sex.genes)
+dim(norm.sex)
+
+# Cluster plot of sex-linked genes:
+Sex <- c("darkred","orange")
+sex_labels <- as.factor(meta$sex)
+Sex_colors <- Sex[as.numeric(sex_labels)]
+
+d <- dist(t(norm.sex))
+hc <- hclust(d, method="average")
+dend <- as.dendrogram(hc)
+
+par(mar=c(10,7,2,4))
+plot(dend)
+dendextend::colored_bars(colors=Sex_colors, dend=dend, rowLabels="sex")
+legend("topright", legend = levels(sex_labels), fill = c("darkred", "orange"), title = "Sex")
+```
+
+#### Correlation Heatmap
+
+```{r}
+# Heatmap + Dendrogram ----
+raw.dist <- dist(t(assay(vsd)))
+colz <- colorRampPalette(brewer.pal(9, "Blues"))(255)
+
+Heatmap(as.matrix(raw.dist), col = colz,
+  name = "Euclidean\ndistance",
+  cluster_columns = hclust(raw.dist), show_column_names = FALSE,
+  cluster_rows = hclust(raw.dist),
+  bottom_annotation = columnAnnotation(Birthweight = vsd$bw, Sex=vsd$sex,
+    col = list(Sex = c(Female = "pink2", Male = "steelblue"),
+               Birthweight  = c(low = "brown", normal = "rosybrown")))
+)
+```
+
+## Differential Gene Expression
+
+```{r}
+gse$bw <- fct(gse$bw, levels = c("NBW","LBW")) 
+dds <- DESeqDataSet(gse, design = ~ sex + bw) # run with optimized design
+dds <- DESeq(dds, parallel = TRUE, BPPARAM = MulticoreParam(28))
+```
+
+#### DGE diagnostics
+
+```{r}
+plotDispEsts(dds, main="Dispersion plot")   
+# Cook's distance for outliers 
+boxplot(log10(assays(dds)[["cooks"]]), range=0, las=2) 
+```
+
+```{r}
+# Extract DESeq2 results, or alpha=0.05 
+res <- results(dds) 
+resultsNames(dds) 
+summary(res, alpha=0.05)
+```
+
+#### Extract Significant DEGs
+
+```{r}
+padj.cutoff <- 0.1 
+lfc.cutoff <- 1 
+DElist <- res %>%
+  data.frame() %>%   
+  tibble::rownames_to_column(var="gene") %>%    
+  mutate(threshold=case_when(padj<=padj.cutoff & abs(log2FoldChange)>=lfc.cutoff~"Sig", T~"Not_Sig")) %>% arrange(padj) %>% as_tibble()  
+# Subset the tibble to keep only significant genes 
+sigDE <- DElist %>%   dplyr::filter(threshold=="Sig")
+```
+
+#### Annotate them using Ensembl
+
+```{r}
+load("~/rna_seq/EDA/Outputs/ENS_anno_genes.Rdata") 
+# merge our result tables [sig or all DE] with the annotations to add extra columns 
+sigDE_anno <- sigDE %>%   
+  left_join(anno.genes, by = c("gene" = "gene_id")) %>%   
+  mutate(gene_biotype = as.factor(gene_biotype))  
+write.csv(sigDE_anno, file = "sigDEGs_PL.csv") 
+kableExtra::kable(sigDE_anno)
+```
+
+#### Volcano plot
+
+```{r}
+DElist %>%   
+  dplyr::filter(!is.na(padj)) %>%   
+  ggplot(aes(x = log2FoldChange, y = -log10(padj),color = threshold)) +   
+  scale_colour_manual(values = c("gray", "red")) +   
+  geom_point(size = 0.5) + geom_hline(yintercept = -log10(0.05)) +
+  geom_vline(xintercept = 1) + geom_vline(xintercept = -1) + my_theme
+```
+
+#### Types of significant DEGs
+
+```{r}
+ggplot(sigDE_anno,aes("Significant genes",fill=gene_biotype)) +   
+  geom_bar() + theme_bw() + xlab("") +   
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+Heatmap
+
+```{r}
+# Transform counts 
+vsd <- vst(dds, blind=F)  
+# Get top 300 DE genes 
+HM_genes <- res[order(res$padj), ] |>   head(100) |>   rownames() heatmapData <- assay(vsd)[HM_genes, ]  
+# Scale counts for visualization 
+heatmapData <- t(scale(t(heatmapData)))  
+# Add annotation & colors 
+heatmapColAnnot <- data.frame(colData(vsd)[, c("bw", "sex")]) heatmapColAnnot <- HeatmapAnnotation(df = heatmapColAnnot) 
+colors <- colorRampPalette(rev(brewer.pal(9, "RdBu")))(255)  
+# Plot as Heatmap 
+Heatmap(heatmapData, col = colors, top_annotation = heatmapColAnnot,         cluster_rows = TRUE, show_row_names = FALSE, cluster_columns = T, column_dend_reorder = T)
+```
+
+#### Top 10 DEGs
+
+```{r}
+# Order results by padj values 
+top10_sigOE <- DElist %>%   arrange(padj) %>%   #pull(gene) %>% 		
+  # Extract character vector of ordered genes   
+  head(10)  
+meta<-coldata %>% rename(sample=names)  
+as_tibble(counts(dds[top10_sigOE$gene, ]), rownames = 'gene') %>%
+  pivot_longer(names_to = "sample", values_to = "counts", -gene) %>%
+  left_join(as_tibble(coldata, rownames = "sample")) %>%
+  ggplot(aes(x = sample, y = counts, fill = bw)) + #geom_point()
+  geom_bar(stat = 'identity', color = "gray30") + 
+  facet_wrap( ~ gene, scales = "free", ncol = 5) +
+  theme(axis.text.x = element_text(size = 7, angle = 90),         
+        axis.title.x = element_blank(), legend.position = "right",
+        legend.text = element_text(size = 7), legend.title = element_text(size = 7))
+```

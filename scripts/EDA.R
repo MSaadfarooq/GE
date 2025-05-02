@@ -8,7 +8,6 @@ suppressPackageStartupMessages({
   library(ComplexHeatmap)
   library(RColorBrewer)
   library(factoextra)
-  library(rafalib)
   library(dendextend)
   library(ggdendro)
   library(corrplot)
@@ -22,21 +21,24 @@ library(NbClust)
 library(ClassDiscovery)
 
 # import the sample sheet ----
-meta<-read_csv('data/Metadata.csv') # missing IDs ?
+meta <- readr::read_csv('data/Metadata_updated_ID.csv.csv') # missing IDs ?
 #Meta$sampleID <- paste0(meta$cordBlood_ID,'_', meta$bw)
 
 # Set directory path
-dir <- "~/results/salmon"
+dir <- "~/results/PL"
 # List directories and extract sample names
 dirs <- list.files(dir, full.names = FALSE, pattern = "\\.salmon$")
 sample_names <- sub("\\.salmon$", "", dirs)
 
+# Filter the dataframe
+meta <- meta[meta$placenta_ID %in% sample_names, ]
+
 ## tximeta expects a table with at least 2 columns (names and files)
 # Modify the file path construction to include the .salmon suffix
 coldata <- meta %>%
-  select(names = cordBlood_ID, bw, sex, delivery) %>%
-  mutate(files = file.path("~/results/salmon",
-                           paste0(meta$cordBlood_ID, ".salmon"),"quant.sf"))
+  select(names = placenta_ID, bw, sex, batch, delivery) %>%
+  mutate(files = file.path("~/results/PL",
+                           paste0(meta$placenta_ID, ".salmon"),"quant.sf"))
 
 # check the modified file paths & if it exists
 coldata$files
@@ -55,7 +57,7 @@ gse
 length(which(rowSums(assay(gse, "counts")) > 10))
 
 # filter for low counts
-gse <- gse[rowSums(assay(gse, "counts")) > 10, ]
+gse <- gse[rowSums(assay(gse, "counts")) > 5, ]
 gse # colData(), rowRanges(), assay()
 
 # assess types of RNA
@@ -79,7 +81,7 @@ gene_counts <- assay(gse) %>%
   round() %>% 
   data.frame()
 write.csv(gene_counts, 'output/gene_counts.csv', row.names = TRUE)
-save(gse, gene_counts, meta, file = '../cb.rda')  # gse <- load("cb.rda")
+save(gse, meta, file = '../pl.rda')  # gse <- load("cb.rda")
 
 # RNA-seq counts distribution
 ggplot(gene_counts) +
@@ -165,6 +167,12 @@ ggplot(sampleCounts %>% filter(count>0),
 ## Create the DESeq dataset object
 dds <- DESeqDataSet(gse, design = ~ bw + sex)
 dds
+
+# 6. Calculate Size Factors
+dds <- estimateSizeFactors(dds)
+normalized_counts <- counts(dds, normalized = TRUE)
+write.csv(normalized_counts, 'output/normalized_counts.csv', row.names = TRUE)
+
 # variance increases with the average read count
 meanSdPlot(assay(dds), ranks = FALSE)
 
@@ -187,16 +195,6 @@ meanSdPlot(assay(vsd), ranks = FALSE)
 plotPCA(vsd, intgroup="bw") #, ntop = 2000 
 
 # alternate to show variances
-pcaData <- plotPCA(vsd, intgroup="sex", returnData=T) 
-
-percentVar <- round(100 * attr(pcaData, "percentVar"))
-ggplot(pcaData, aes(x = PC1, y = PC2)) +
-  geom_point(aes(color = bw), size = 3) +
-  theme_bw() +
-  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
-  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
-  coord_fixed() 
-
 pcaData_libSize <- plotPCA(vsd, intgroup = c("libSize"), returnData = TRUE)
 percentVar <- round(100 * attr(pcaData_libSize, "percentVar"))
 
@@ -252,7 +250,7 @@ hc <- hclust(d, method="complete")
 
 # Plot clustering, identifying sample and color coding by status:
 pdf("output/NormalisedFiltered_Clustering.pdf", width=25, height=10)
-myplclust(hc, labels=meta$cordBlood_ID, lab.col=meta$cl, cex=1.5, main="Samples Clustering (complete)")
+rafalib::myplclust(hc, labels=meta$cordBlood_ID, lab.col=meta$cl, cex=1.5, main="Samples Clustering (complete)")
 legend("topright",legend=c("normal", "low"), cex = 1,
        text.col=c("lightblue","darkblue"), pch=rep(16,2),col=c("lightblue","darkblue"))
 dev.off()

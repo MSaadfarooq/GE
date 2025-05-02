@@ -39,9 +39,6 @@ summary(res, alpha=0.05) # sum(res$padj < 0.05, na.rm=TRUE)
 
 head(res[order(res$pvalue), ]) # order by lowest p-value
 
-# Output normalized counts to save as a file
-normalized_counts <- counts(dds, normalized=TRUE)
-write.csv(normalized_counts, 'FS/DE/normalized_counts.csv', row.names = TRUE)
 saveRDS(dds,file =paste0('FS/DE/',project,"_dds.RDS"))
 
 # distribution of p-values
@@ -82,7 +79,7 @@ dev.off()
 ## Extract DE genes ----
 # Set thresholds
 padj.cutoff <- 0.1
-lfc.cutoff <- 0.5
+lfc.cutoff <- 1
 DElist <- res %>%
   data.frame() %>%
   tibble::rownames_to_column(var="gene") %>% 
@@ -138,6 +135,7 @@ DElist %>%
   geom_vline(xintercept = -1) + # lines optional
   theme_bw()
 ggsave('FS/DE/volcano.jpeg')
+
 ## Barplot of gene_biotype
 ggplot(sigDE_anno,aes("Significant genes",fill=gene_biotype)) +
   geom_bar() + 
@@ -145,6 +143,7 @@ ggplot(sigDE_anno,aes("Significant genes",fill=gene_biotype)) +
   xlab("") +
   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
 ggsave('FS/DE/biotype.jpeg')
+
 ## Heatmap of results ----
 # Transform counts
 vsd <- vst(dds, blind=F)

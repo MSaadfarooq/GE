@@ -1,0 +1,113 @@
+---
+title: "venn_funct"
+format: html
+editor: visual
+---
+
+## Overlapping DEGs
+
+setting environment
+
+```{r}
+#| include: false
+#| echo: false
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(gprofiler2)
+library(tidyverse)
+library(kableExtra)
+library(RColorBrewer)
+library(ggvenn)
+
+```
+
+```{r}
+#| include: false
+#| echo: false
+load('../PL_result.rda')
+load('../CB_result.rda')
+```
+
+```{r}
+# Venn diagram of the results ----
+# prepare the data with a column for Gene
+res_pl.vn <- as.data.frame(res) %>%
+     rownames_to_column("Gene")
+res_cb.vn <- as.data.frame(res_cb) %>%
+     rownames_to_column("Gene")
+# 
+# # function to get genes
+getGenes <- function(shrTab, direction) {
+  sign <- ifelse(direction == "up", 1, -1)
+  shrTab %>%
+    filter(padj < 0.1) %>%
+    filter(sign * log2FoldChange > 0) %>%
+    pull("Gene")
+}
+vennList <- list(Upregulated_CB = getGenes(res_cb.vn, "up"),
+                 Downregulated_CB = getGenes(res_cb.vn, "down"),
+                 Upregulated_PL = getGenes(res_pl.vn, "up"),
+                 Downregulated_PL = getGenes(res_pl.vn, "down"))
+# # draw venn
+ggvenn(vennList, set_name_size = 3)
+# 
+# # common significant DE genes in both groups
+genes_PL_CB <- inner_join(sigDE_anno, sigDE_anno_cb, by = "gene")
+# 
+# sigDE_annoPL_CB <- genes_PL_CB %>%
+#   inner_join(anno.genes, by = c("gene" = "gene_id"))
+# write.csv(sigDE_annoPL_CB, "DE_sig_PL-CB.csv")
+# 
+# # plot their Venn Diagram
+sigVen <- list(CordBlood=sigDE_anno_cb$gene, Placenta=sigDE_anno$gene)
+ggvenn(sigVen, fill_color = c("brown", "purple4"), auto_scale = T, stroke_color = FALSE )
+
+```
+
+------------------------------------------------------------------------
+
+## Placenta GO
+
+The over-representation analysis (ORA) is directly applied to the list of DE genes and it evaluates the association of the DE genes and the gene set by the numbers of genes in different categories
+
+```{r}
+resGO <- enrichGO(gene = sigDE_anno$gene_name,
+                  keyType = "SYMBOL",
+                  ont = "BP",
+                  OrgDb = org.Hs.eg.db)
+resGOTable <- as.data.frame(resGO)
+#write.csv(resGOTable, "GO_ORA.csv")
+kable(head(resGOTable))
+```
+
+### Visualisation
+
+#### *barplot*
+
+for a small number of significant gene sets.
+
+```{r}
+barplot(resGO, showCategory = 10)
+```
+
+#### 
+
+### Interactive enrichment plot of Cordblood
+
+The gProfiler package can be used to interactively plot the enrichment results
+
+```{r}
+gostres <- gost(sigDE_anno_cb$gene) 
+gostplot(gostres, capped = FALSE)
+```
+
+## **KEGG pathway**
+
+```{r}
+ek <- enrichKEGG(gene = sigDE_anno_cb$entrezid,
+                 organism = 'hsa', 
+                 pvalueCutoff = 0.05)
+ekTable <- as.data.frame(ek)
+kable(head(ekTable))
+```
